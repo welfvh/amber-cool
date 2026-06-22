@@ -31,6 +31,10 @@ final class FanModel: ObservableObject {
     @Published var skinTemp: Double = 0        // hottest palm/wrist/skin sensor — what your hands feel
     @Published var currentMode: String = "—"
     @Published var daemonInstalled = false
+    @Published var topProcs: [HeatProc] = []      // user-owned CPU hogs (heat sources)
+
+    private var prevCpu: [Int32: UInt64] = [:]    // pid -> cumulative cpu ns, last sample
+    private var prevCpuWall: Double = 0           // monotonic ns of last sample
 
     init() {
         let opened = smc.open()
@@ -58,7 +62,48 @@ final class FanModel: ObservableObject {
         daemonInstalled = FileManager.default.fileExists(atPath: MODE_CONFIG_PATH)
         currentMode = (try? String(contentsOfFile: MODE_CONFIG_PATH, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "—"
-        appLog("refresh fans_actual=\(fans.map { Int($0.actual) }) fans_target=\(fans.map { Int($0.target) }) hands=\(String(format: "%.1f", skinTemp))(raw \(String(format: "%.1f", rawSkin))) cpu=\(String(format: "%.1f", cpuTemp))(raw \(String(format: "%.1f", rawCpu))) mode='\(currentMode)'")
+        updateTopProcs()
+        appLog("refresh fans_actual=\(fans.map { Int($0.actual) }) fans_target=\(fans.map { Int($0.target) }) hands=\(String(format: "%.1f", skinTemp))(raw \(String(format: "%.1f", rawSkin))) cpu=\(String(format: "%.1f", cpuTemp))(raw \(String(format: "%.1f", rawCpu))) mode='\(currentMode)' top=\(topProcs.prefix(3).map { "\($0.name):\(Int($0.cpu))%" })")
+    }
+
+    /// Sample CPU deltas over the refresh interval and publish the top user-owned consumers.
+    /// Runs only on the refresh timer (suspended during menu tracking) so the menu never rebuilds
+    /// mid-open. Cost: one proc_pidinfo per pid (~a few ms), plus a few lookups for the top candidates.
+    private func updateTopProcs() {
+        let now = ProcessHeat.monotonicNs()
+        let pids = ProcessHeat.allPids()
+        var cur: [Int32: UInt64] = [:]
+        cur.reserveCapacity(pids.count)
+        for p in pids { if let c = ProcessHeat.cpuNs(p) { cur[p] = c } }
+
+        if prevCpuWall > 0, now > prevCpuWall {
+            let wall = now - prevCpuWall
+            let me = getpid(), myUid = getuid()
+            // Rank by CPU delta first (cheap), then resolve uid/name only for the top candidates.
+            let ranked = cur.compactMap { (pid, c1) -> (Int32, Double)? in
+                guard pid != me, let c0 = prevCpu[pid], c1 >= c0 else { return nil }
+                let cpu = Double(c1 &- c0) / wall * 100.0
+                return cpu >= 0.5 ? (pid, cpu) : nil
+            }.sorted { $0.1 > $1.1 }
+
+            var result: [HeatProc] = []
+            for (pid, cpu) in ranked {
+                if result.count >= 8 { break }
+                guard let bi = ProcessHeat.bsdInfo(pid), bi.uid == myUid else { continue } // my apps + helpers
+                let name = ProcessHeat.displayName(pid, fallback: bi.comm)
+                if ProcessHeat.denylist.contains(name) || ProcessHeat.denylist.contains(bi.comm) { continue }
+                result.append(HeatProc(pid: pid, name: name, cpu: cpu))
+            }
+            topProcs = result
+        }
+        prevCpu = cur
+        prevCpuWall = now
+    }
+
+    func killProc(_ p: HeatProc) {
+        let ok = ProcessHeat.terminate(p.pid)
+        appLog("killProc('\(p.name)' pid=\(p.pid) cpu=\(Int(p.cpu))%) SIGTERM ok=\(ok)")
+        refresh()
     }
 
     /// Title shows IS/OUGHT: current temp at the controlled location / target. In a non-temp mode
@@ -136,6 +181,20 @@ struct MenuContent: View {
             Section("CPU die") {
                 ForEach(cpuPresets, id: \.self) { t in
                     Button("≤ \(t) °C") { model.setMode("temp \(t) cpu") }
+                }
+            }
+        }
+
+        Divider()
+
+        Menu("Top heat sources") {
+            if model.topProcs.isEmpty {
+                Text("(nothing notable right now)")
+            } else {
+                Section("Click to quit (graceful)") {
+                    ForEach(model.topProcs) { p in
+                        Button("Kill \(p.name) — \(Int(p.cpu))%") { model.killProc(p) }
+                    }
                 }
             }
         }
