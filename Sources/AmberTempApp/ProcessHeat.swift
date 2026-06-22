@@ -78,17 +78,78 @@ enum ProcessHeat {
         return (bi.pbi_uid, comm)
     }
 
-    /// Human display name: prefer the .app bundle name from the executable path, else comm.
+    // Generic interpreters whose own name ("Python", "node") tells you nothing about WHAT is running.
+    // For these we dig out the actual script + project so the kill label is meaningful (and safe).
+    private static let interpreters: Set<String> = [
+        "python", "python3", "node", "ruby", "perl", "java", "bash", "zsh", "sh", "deno", "bun", "Rscript"
+    ]
+
+    /// argv for a pid via KERN_PROCARGS2 (works for your own processes, no root).
+    static func processArgs(_ pid: Int32) -> [String] {
+        var mib = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return [] }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0, size > 4 else { return [] }
+        let argc = buf.withUnsafeBytes { $0.load(as: Int32.self) }
+        var idx = 4
+        while idx < size, buf[idx] != 0 { idx += 1 }      // skip exec path
+        while idx < size, buf[idx] == 0 { idx += 1 }       // skip padding nulls
+        var args: [String] = [], cur: [UInt8] = [], got = 0
+        while idx < size, got < Int(argc) {
+            if buf[idx] == 0 { args.append(String(decoding: cur, as: UTF8.self)); cur.removeAll(); got += 1 }
+            else { cur.append(buf[idx]) }
+            idx += 1
+        }
+        return args
+    }
+
+    /// Current working directory of a pid (for project context). PROC_PIDVNODEPATHINFO = 9.
+    static func cwdName(_ pid: Int32) -> String? {
+        var vpi = proc_vnodepathinfo()
+        let r = proc_pidinfo(pid, 9, 0, &vpi, Int32(MemoryLayout<proc_vnodepathinfo>.size))
+        guard r > 0 else { return nil }
+        let path = withUnsafeBytes(of: vpi.pvi_cdir.vip_path) { raw -> String in
+            guard let base = raw.baseAddress else { return "" }
+            return String(cString: base.assumingMemoryBound(to: CChar.self))
+        }
+        let last = (path as NSString).lastPathComponent
+        return last.isEmpty ? nil : last
+    }
+
+    /// Human display name. .app → bundle name. Interpreter → "script · project" so you can tell
+    /// what you'd actually be killing (e.g. "build.py · pipeline", not just "Python").
     static func displayName(_ pid: Int32, fallback: String) -> String {
         var buf = [CChar](repeating: 0, count: 4096)
         let n = proc_pidpath(pid, &buf, UInt32(buf.count))
         guard n > 0 else { return fallback }
         let path = String(cString: buf)
-        if let r = path.range(of: ".app/") {
-            let appName = (String(path[..<r.lowerBound]) + ".app" as NSString).lastPathComponent
-            return appName.replacingOccurrences(of: ".app", with: "")
+        let exe = (path as NSString).lastPathComponent
+
+        // Interpreter check FIRST — framework pythons live in a Python.app bundle, so the .app
+        // rule below would otherwise mislabel them "Python" and hide the real script.
+        guard interpreters.contains(exe.lowercased()) else {
+            if let r = path.range(of: ".app/") {
+                let appName = (String(path[..<r.lowerBound]) + ".app" as NSString).lastPathComponent
+                return appName.replacingOccurrences(of: ".app", with: "")
+            }
+            return exe
         }
-        return (path as NSString).lastPathComponent
+
+        // It's an interpreter — find the script/module from argv.
+        let args = processArgs(pid)
+        var label: String? = nil
+        var i = 1
+        while i < args.count {
+            let a = args[i]
+            if a == "-m", i + 1 < args.count { label = args[i + 1]; break }   // python -m http.server
+            if a.hasPrefix("-") { i += 1; continue }                          // skip flags
+            label = (a as NSString).lastPathComponent                         // the script
+            break
+        }
+        guard let script = label, !script.isEmpty else { return exe }
+        if let proj = cwdName(pid), proj != script { return "\(script) · \(proj)" }
+        return script
     }
 
     /// Graceful kill. SIGTERM only — the app gets to clean up / prompt to save.
