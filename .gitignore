@@ -1,0 +1,18 @@
+# Build artifacts
+probe/smc-probe
+*.o
+*.dSYM/
+.build/
+DerivedData/
+build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Signing / secrets (never commit)
+*.p12
+*.cer
+*.provisionprofile
+notary-*.json
