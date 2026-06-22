@@ -17,5 +17,9 @@ let package = Package(
             name: "fanctl",
             dependencies: ["AmberTempSMC"]
         ),
+        .executableTarget(
+            name: "AmberTempApp",
+            dependencies: ["AmberTempSMC"]
+        ),
     ]
 )
