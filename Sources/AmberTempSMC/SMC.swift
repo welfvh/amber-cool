@@ -30,11 +30,13 @@ public final class SMC {
     private static let OFF_DATATYPE = 32
     private static let OFF_RESULT = 40
     private static let OFF_DATA8 = 42
+    private static let OFF_DATA32 = 44
     private static let OFF_BYTES = 48
 
     private static let KERNEL_INDEX_SMC: UInt32 = 2
     private static let CMD_READ_BYTES: UInt8 = 5
     private static let CMD_WRITE_BYTES: UInt8 = 6
+    private static let CMD_READ_INDEX: UInt8 = 8
     private static let CMD_READ_KEYINFO: UInt8 = 9
 
     private var conn: io_connect_t = 0
@@ -263,14 +265,21 @@ public extension SMC {
         return writeNumber("F\(i)Tg", clamped)
     }
 
-    /// Mode 1: scale 0...10 -> target between each fan's own min and max.
+    /// Absolute lower bound for the scale's quiet end. The fan's reported min (F0Mn, ~2317 on this
+    /// M4 Pro) is just a guideline — writing a lower target makes the fans genuinely quieter. We
+    /// floor at 1500 rpm so the fan never stalls (a stalled fan can't be trusted to restart on demand).
+    static let scaleFloorRPM: Double = 1500
+
+    /// Mode 1: scale 0...10 -> target between `scaleFloorRPM` (quieter than the reported min) and max.
     @discardableResult
     func applyScale(_ scale: Double) -> Bool {
         let s = Swift.max(0, Swift.min(10, scale)) / 10.0
         var ok = true
         for f in fans() {
-            let target = f.min + (f.max - f.min) * s
-            if !setTarget(f.index, rpm: target) { ok = false }
+            let lo = Swift.min(Self.scaleFloorRPM, f.min)        // allow below the reported min
+            let target = lo + (f.max - lo) * s
+            let clamped = Swift.max(lo, Swift.min(f.max, target)) // bypass setTarget's [min,max] clamp
+            if !writeNumber("F\(f.index)Tg", clamped) { ok = false }
         }
         return ok
     }
@@ -314,15 +323,117 @@ public extension SMC {
         "Te05","Te0S","Tp01","Tp05","Tp09","Tp0D","Tp0H","Tp0e","Tp0A","Tp0C","Tp0f"
     ]
 
-    /// Average of valid CPU cluster sensors, or nil if none readable.
-    func cpuTemperature() -> Double? {
-        var vals: [Double] = []
+    /// Per-sensor readings for the valid CPU cluster keys (for logging/diagnostics).
+    func cpuTemperatureSamples() -> [(key: String, value: Double)] {
+        var out: [(String, Double)] = []
         var seen = Set<String>()
         for k in Self.cpuTempKeys where !seen.contains(k) {
             seen.insert(k)
-            if let d = value(k), d > 0, d < 150 { vals.append(d) }
+            if let d = value(k), d > 0, d < 150 { out.append((k, d)) }
         }
-        guard !vals.isEmpty else { return nil }
-        return vals.reduce(0, +) / Double(vals.count)
+        return out
+    }
+
+    /// CPU temperature for control = the HOTTEST valid cluster sensor.
+    /// Averaging is wrong on Apple Silicon: idle/clock-gated P-core sensors report
+    /// ~0 / negative values, which tank an average to a bogus low (observed: 15°C while
+    /// the hottest core was 57°C). The max sensor is both robust to that and the correct
+    /// thermal control input (cool to the hottest point). Matches TG Pro "Highest CPU".
+    func cpuTemperature() -> Double? {
+        cpuTemperatureSamples().map { $0.value }.max()
+    }
+}
+
+// MARK: - Full sensor enumeration (discover every temperature sensor on this machine)
+
+public struct TempSensor {
+    public let key: String
+    public let value: Double
+    /// Coarse classification by key prefix + value range.
+    /// .die = CPU/GPU silicon (hot, 50–90°C); .skin = chassis/surface near hands (warm, ~25–45°C);
+    /// .other = battery/ambient/power/unknown.
+    public enum Kind: String { case die, skin, other }
+    public let kind: Kind
+}
+
+public extension SMC {
+
+    /// Surface / hand-contact sensors — what your palms, wrists and fingers actually feel,
+    /// NOT the silicon die. Validated present + sane (~32–36°C) on this M4 Pro:
+    ///   TaLW/TaRW = ambient Left/Right Wrist (the palm rest)
+    ///   Ts0P/Ts1P = Apple "skin" sensors (external case temp; drive thermal-comfort limits)
+    ///   TB0T/TB1T/TB2T = battery, which sits directly under the trackpad/palm rest
+    /// "Hold temperature → Hands" controls toward the HOTTEST of these (the warmest spot you touch).
+    static let skinTempKeys: [String] = [
+        "TaLW","TaRW","Ts0P","Ts1P","TB0T","TB1T","TB2T"
+    ]
+
+    /// Number of SMC keys the kernel exposes (read the "#KEY" count key, a 4-byte big-endian int).
+    var keyCount: Int {
+        guard let v = read("#KEY"), v.bytes.count >= 4 else { return 0 }
+        let b = v.bytes
+        return Int((UInt32(b[0]) << 24) | (UInt32(b[1]) << 16) | (UInt32(b[2]) << 8) | UInt32(b[3]))
+    }
+
+    /// Resolve the 4-char key name at a given enumeration index (CMD_READ_INDEX / data32 = index).
+    func keyName(at index: Int) -> String? {
+        guard isOpen else { return nil }
+        var inp = [UInt8](repeating: 0, count: Self.STRUCT_SIZE)
+        inp[Self.OFF_DATA8] = Self.CMD_READ_INDEX
+        Self.setU32(&inp, Self.OFF_DATA32, UInt32(index))
+        let (kr, out) = call(inp)
+        guard kr == kIOReturnSuccess else { return nil }
+        let code = Self.getU32(out, Self.OFF_KEY)
+        guard code != 0 else { return nil }
+        return Self.codeToString(code)
+    }
+
+    /// Every key name the SMC exposes (one IOKit call per index; ~hundreds total).
+    func allKeyNames() -> [String] {
+        let n = keyCount
+        guard n > 0 else { return [] }
+        var out: [String] = []
+        out.reserveCapacity(n)
+        for i in 0..<n { if let k = keyName(at: i) { out.append(k) } }
+        return out
+    }
+
+    /// All temperature sensors (keys starting with "T") that read a plausible value,
+    /// classified into die / skin / other. The classification is a heuristic: it's how we
+    /// surface "heat near your hands" without a documented per-model sensor map.
+    func allTemperatureSensors() -> [TempSensor] {
+        let skinSet = Set(Self.skinTempKeys)
+        var out: [TempSensor] = []
+        for k in allKeyNames() where k.hasPrefix("T") {
+            guard let d = value(k), d > 0, d < 150 else { continue }
+            let kind: TempSensor.Kind
+            if skinSet.contains(k) {
+                kind = .skin                                  // curated surface/hand-contact sensors
+            } else if k.hasPrefix("Tp") || k.hasPrefix("Te") || k.hasPrefix("Tg") {
+                kind = .die                                   // CPU/GPU silicon
+            } else {
+                kind = .other                                 // internal proximities, battery, ambient, power
+            }
+            out.append(TempSensor(key: k, value: d, kind: kind))
+        }
+        return out.sorted { $0.value > $1.value }
+    }
+
+    /// Hottest curated surface sensor — the warmest spot your hands actually touch.
+    func skinTemperature() -> Double? {
+        Self.skinTempKeys.compactMap { value($0) }.filter { $0 > 0 && $0 < 80 }.max()
+    }
+
+    /// Temperature for a control "location" spec used by temp-hold mode:
+    ///   "cpu" -> hottest CPU cluster sensor (default, legacy)
+    ///   "skin" -> hottest chassis/surface sensor (heat near your hands)
+    ///   "<KEY>" -> that exact SMC sensor key
+    func controlTemperature(_ spec: String) -> Double? {
+        switch spec.lowercased() {
+        case "", "cpu": return cpuTemperature()
+        case "skin", "hands": return skinTemperature()
+        default:
+            return value(spec)   // treat as an explicit sensor key
+        }
     }
 }

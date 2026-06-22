@@ -33,7 +33,7 @@ printf '%s\n' "$MODE" > /usr/local/etc/amber-temp/mode
 # Make the mode file writable by the logged-in user so the menu bar app can change modes without root.
 CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null || echo root)"
 chown "$CONSOLE_USER" /usr/local/etc/amber-temp/mode 2>/dev/null || true
-chmod 644 /usr/local/etc/amber-temp/mode
+chmod 666 /usr/local/etc/amber-temp/mode   # any user process (the menu bar app) can update the mode in place
 
 echo "==> Installing LaunchDaemon"
 install -m 644 -o root -g wheel "$PLIST_SRC" "$PLIST_DST"

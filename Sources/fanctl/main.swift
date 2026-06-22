@@ -33,7 +33,8 @@ func printStatus() {
         print(String(format: "Fan %d: %4.0f rpm  (target %4.0f, range %.0f–%.0f, %@)",
                      f.index, f.actual, f.target, f.min, f.max, md))
     }
-    if let t = smc.cpuTemperature() { print(String(format: "CPU: %.1f°C  (cluster average)", t)) }
+    if let t = smc.skinTemperature() { print(String(format: "Hands: %.1f°C  (hottest palm/wrist/skin sensor)", t)) }
+    if let t = smc.cpuTemperature() { print(String(format: "CPU:   %.1f°C  (hottest die sensor)", t)) }
     print("Ftst unlock: \(smc.hasFtst ? "present" : "absent")")
 }
 
@@ -55,11 +56,18 @@ func ensureManual(_ smc: SMC) {
     if md != 1 { _ = smc.engageManual() }   // re-engages after wake (Ftst reset to 0)
 }
 
-func applyTempControl(_ smc: SMC, setpoint: Double, margin: Double, ema: inout Double?) {
-    guard let raw = smc.cpuTemperature() else { _ = smc.applyMax(); return }  // fail-safe: cool hard
+/// Margin (ramp half-width) appropriate to a control location: surfaces move in a narrow band,
+/// the die swings wide.
+func defaultMargin(_ location: String) -> Double { location.lowercased() == "cpu" ? DEFAULT_MARGIN : 3.0 }
+
+/// Hold a target temperature at a chosen LOCATION ("skin"/"hands", "cpu", or an explicit sensor key).
+/// CPU-die emergency protection ALWAYS runs first — even when controlling toward hand temp, a burst
+/// must never cook the silicon while your palms stay cool.
+func applyTempControl(_ smc: SMC, setpoint: Double, location: String, margin: Double, ema: inout Double?) {
+    if let die = smc.cpuTemperature(), die >= EMERGENCY_C { _ = smc.applyMax(); return }
+    guard let raw = smc.controlTemperature(location) else { _ = smc.applyMax(); return }  // fail-safe: cool hard
     ema = ema == nil ? raw : (ema! * 0.7 + raw * 0.3)
     let temp = ema!
-    if temp >= EMERGENCY_C { _ = smc.applyMax(); return }
     let tLow = setpoint - margin, tHigh = setpoint + margin
     for f in smc.fans() {
         let frac = temp <= tLow ? 0 : (temp >= tHigh ? 1 : (temp - tLow) / (tHigh - tLow))
@@ -67,7 +75,8 @@ func applyTempControl(_ smc: SMC, setpoint: Double, margin: Double, ema: inout D
     }
 }
 
-/// Apply a config line like "max", "scale 7", "rpm 4000", "temp 65 8", or "auto".
+/// Apply a config line like "max", "scale 7", "rpm 4000", "temp 35 skin", "temp 65 cpu 8", or "auto".
+/// temp format: `temp <targetC> [location] [margin]`  (location defaults to "skin" — heat to your hands).
 func applyModeString(_ line: String, _ smc: SMC, ema: inout Double?) {
     let parts = line.split(separator: " ").map(String.init)
     switch parts.first?.lowercased() ?? "max" {
@@ -77,8 +86,9 @@ func applyModeString(_ line: String, _ smc: SMC, ema: inout Double?) {
     case "temp":
         ensureManual(smc)
         if parts.count > 1, let sp = Double(parts[1]) {
-            let margin = parts.count > 2 ? (Double(parts[2]) ?? DEFAULT_MARGIN) : DEFAULT_MARGIN
-            applyTempControl(smc, setpoint: sp, margin: margin, ema: &ema)
+            let location = parts.count > 2 ? parts[2] : "skin"
+            let margin = parts.count > 3 ? (Double(parts[3]) ?? defaultMargin(location)) : defaultMargin(location)
+            applyTempControl(smc, setpoint: sp, location: location, margin: margin, ema: &ema)
         }
     default: ensureManual(smc); _ = smc.applyMax()
     }
@@ -120,35 +130,50 @@ case "max":
 case "temp":
     requireRoot()
     guard args.count > 1, let setpoint = Double(args[1]), setpoint > 0, setpoint < 110 else {
-        fail("usage: fanctl temp <targetC> [margin]")
+        fail("usage: fanctl temp <targetC> [location] [margin]   (location: skin|hands|cpu|<KEY>, default skin)")
     }
-    let margin = args.count > 2 ? (Double(args[2]) ?? DEFAULT_MARGIN) : DEFAULT_MARGIN
-    let tLow = setpoint - margin, tHigh = setpoint + margin
+    let location = args.count > 2 ? args[2] : "skin"
+    let margin = args.count > 3 ? (Double(args[3]) ?? defaultMargin(location)) : defaultMargin(location)
     installSafetyHandlers()
     guard smc.engageManual() else { fail("Failed to engage manual control.") }
-    print(String(format: "Holding CPU ≈ %.0f°C (ramp %.0f→%.0f). Ctrl-C to restore auto.", setpoint, tLow, tHigh))
+    print(String(format: "Holding %@ ~ %.0f C (ramp %.0f-%.0f). Ctrl-C to restore auto.",
+                 location, setpoint, setpoint - margin, setpoint + margin))
     var ema: Double? = nil
     while true {
-        guard let raw = smc.cpuTemperature() else {
-            _ = smc.restoreAuto(); fail("Lost temperature reading — reverted to auto for safety.")
+        guard smc.controlTemperature(location) != nil else {
+            _ = smc.restoreAuto(); fail("Lost '\(location)' temperature reading - reverted to auto for safety.")
         }
-        ema = ema == nil ? raw : (ema! * 0.7 + raw * 0.3)   // smooth the control input
-        let temp = ema!
-        if temp >= EMERGENCY_C {
-            _ = smc.applyMax()
-        } else {
-            for f in smc.fans() {
-                let frac: Double
-                if temp <= tLow { frac = 0 }
-                else if temp >= tHigh { frac = 1 }
-                else { frac = (temp - tLow) / (tHigh - tLow) }
-                _ = smc.setTarget(f.index, rpm: f.min + (f.max - f.min) * frac)
-            }
-        }
+        applyTempControl(smc, setpoint: setpoint, location: location, margin: margin, ema: &ema)
         let tgt = smc.fans().first?.target ?? 0
-        print(String(format: "  %.1f°C -> %.0f rpm", temp, tgt))
+        print(String(format: "  %@ %.1f C -> %.0f rpm", location, ema ?? 0, tgt))
         Thread.sleep(forTimeInterval: TEMP_INTERVAL)
     }
+
+case "temps":   // diagnostic: dump each CPU sensor key, raw bytes, decoded value
+    for k in SMC.cpuTempKeys {
+        if let v = smc.read(k) {
+            let dec = SMC.decode(v).map { String(format: "%.1f", $0) } ?? "—"
+            print("\(k)  type=\(v.type)  raw=\(Array(v.bytes.prefix(v.size)))  decoded=\(dec)")
+        } else {
+            print("\(k)  (unreadable)")
+        }
+    }
+    if let t = smc.cpuTemperature() { print(String(format: "average = %.1f°C", t)) }
+
+case "sensors":   // enumerate EVERY temperature sensor (no root), classified die/skin/other
+    let sensors = smc.allTemperatureSensors()
+    if sensors.isEmpty { print("No temperature sensors found."); break }
+    print("ALL TEMPERATURE SENSORS  (\(sensors.count) found, hottest first)")
+    print("  skin = chassis/surface near your hands (~20–48°C) · die = CPU/GPU silicon · other = battery/ambient/power\n")
+    for kind in ["skin", "die", "other"] {
+        let group = sensors.filter { $0.kind.rawValue == kind }
+        guard !group.isEmpty else { continue }
+        print("[\(kind.uppercased())]")
+        for s in group { print(String(format: "  %@  %.1f°C", s.key, s.value)) }
+        print("")
+    }
+    if let c = smc.cpuTemperature() { print(String(format: "control: cpu=%.1f°C", c)) }
+    if let s = smc.controlTemperature("skin") { print(String(format: "control: skin=%.1f°C", s)) }
 
 case "auto":
     requireRoot()
@@ -160,10 +185,18 @@ case "daemon":
     installSafetyHandlers()   // restore auto on SIGTERM/SIGINT
     var ema: Double? = nil
     FileHandle.standardError.write(Data("amber-temp daemon started (config: \(path))\n".utf8))
+    let iso = ISO8601DateFormatter()
     while true {
         let line = (try? String(contentsOfFile: path, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "max"
-        applyModeString(line.isEmpty ? "max" : line, smc, ema: &ema)
+        let mode = line.isEmpty ? "max" : line
+        applyModeString(mode, smc, ema: &ema)
+        let hands = smc.skinTemperature().map { String(format: "%.1f", $0) } ?? "—"
+        let cpu = smc.cpuTemperature().map { String(format: "%.1f", $0) } ?? "—"
+        let targets = smc.fans().map { Int($0.target) }
+        let actual = smc.fans().map { Int($0.actual) }
+        print("\(iso.string(from: Date())) [daemon] mode='\(mode)' hands=\(hands) cpu=\(cpu) targets=\(targets) actual=\(actual)")
+        fflush(stdout)
         Thread.sleep(forTimeInterval: TEMP_INTERVAL)
     }
 
