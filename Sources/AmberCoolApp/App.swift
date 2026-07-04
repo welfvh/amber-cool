@@ -11,11 +11,13 @@ import AmberCoolSMC
 
 // Prefer the amber-cool config; fall back to the pre-rename amber-temp path so the app
 // keeps controlling a daemon that hasn't been reinstalled under the new name yet.
-let MODE_CONFIG_PATH: String = {
+// Resolved per access, not once at launch — the daemon can be reinstalled under the
+// new name while the app is running, and the app must follow it to the new path.
+func modeConfigPath() -> String {
     let new = "/usr/local/etc/amber-cool/mode"
     let old = "/usr/local/etc/amber-temp/mode"
     return FileManager.default.fileExists(atPath: new) ? new : old
-}()
+}
 let APP_LOG_PATH = NSString(string: "~/Library/Logs/amber-cool-app.log").expandingTildeInPath
 
 func appLog(_ s: String) {
@@ -73,8 +75,8 @@ final class FanModel: ObservableObject {
         let rawSkin = smc.skinTemperature() ?? 0
         cpuTemp = cpuTemp <= 0 ? rawCpu : cpuTemp * 0.6 + rawCpu * 0.4
         skinTemp = skinTemp <= 0 ? rawSkin : skinTemp * 0.6 + rawSkin * 0.4
-        daemonInstalled = FileManager.default.fileExists(atPath: MODE_CONFIG_PATH)
-        currentMode = (try? String(contentsOfFile: MODE_CONFIG_PATH, encoding: .utf8))?
+        daemonInstalled = FileManager.default.fileExists(atPath: modeConfigPath())
+        currentMode = (try? String(contentsOfFile: modeConfigPath(), encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "—"
         updateTopProcs()
         appLog("refresh fans_actual=\(fans.map { Int($0.actual) }) fans_target=\(fans.map { Int($0.target) }) hands=\(String(format: "%.1f", skinTemp))(raw \(String(format: "%.1f", rawSkin))) cpu=\(String(format: "%.1f", cpuTemp))(raw \(String(format: "%.1f", rawCpu))) mode='\(currentMode)' top=\(topProcs.prefix(3).map { "\($0.name):\(Int($0.cpu))%" })")
@@ -152,12 +154,12 @@ final class FanModel: ObservableObject {
         var writeOK = false
         var writeErr = "—"
         do {
-            try (line + "\n").write(toFile: MODE_CONFIG_PATH, atomically: false, encoding: .utf8)
+            try (line + "\n").write(toFile: modeConfigPath(), atomically: false, encoding: .utf8)
             writeOK = true
         } catch {
             writeErr = "\(error)"
         }
-        let readback = (try? String(contentsOfFile: MODE_CONFIG_PATH, encoding: .utf8))?
+        let readback = (try? String(contentsOfFile: modeConfigPath(), encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
         appLog("setMode('\(line)') writeOK=\(writeOK) err=\(writeErr) readback='\(readback)'")
         currentMode = line
