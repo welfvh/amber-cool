@@ -51,10 +51,13 @@ final class FanModel: ObservableObject {
         appLog("app start: smc.open()=\(opened) fanCount=\(smc.fanCount)")
         // Auto-enroll as a login item on first run — a menu bar app that isn't running
         // is invisible, which defeats the point. The menu has a toggle to opt out.
-        if SMAppService.mainApp.status == .notRegistered {
+        // Note: a never-registered app reports .notFound (NOT .notRegistered), so gate
+        // on anything-but-enabled.
+        if SMAppService.mainApp.status != .enabled {
             do { try SMAppService.mainApp.register() } catch { appLog("login item register failed: \(error)") }
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
+        appLog("login item status=\(SMAppService.mainApp.status.rawValue) enabled=\(launchAtLogin)")
         refresh()
         // Default-mode timer ON PURPOSE: it is SUSPENDED while the menu is open (event tracking),
         // so the open NSMenu stays static and clickable. Refreshing @Published during tracking
