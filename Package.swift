@@ -2,24 +2,24 @@
 import PackageDescription
 
 let package = Package(
-    name: "amber-temp",
+    name: "amber-cool",
     platforms: [.macOS(.v13)],
     products: [
-        .library(name: "AmberTempSMC", targets: ["AmberTempSMC"]),
+        .library(name: "AmberCoolSMC", targets: ["AmberCoolSMC"]),
         .executable(name: "fanctl", targets: ["fanctl"]),
     ],
     targets: [
         .target(
-            name: "AmberTempSMC",
+            name: "AmberCoolSMC",
             linkerSettings: [.linkedFramework("IOKit")]
         ),
         .executableTarget(
             name: "fanctl",
-            dependencies: ["AmberTempSMC"]
+            dependencies: ["AmberCoolSMC"]
         ),
         .executableTarget(
-            name: "AmberTempApp",
-            dependencies: ["AmberTempSMC"]
+            name: "AmberCoolApp",
+            dependencies: ["AmberCoolSMC"]
         ),
     ]
 )

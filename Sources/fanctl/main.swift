@@ -1,4 +1,4 @@
-// fanctl — amber-temp command-line fan control.
+// fanctl — amber-cool command-line fan control.
 // Reads work unprivileged; writes (scale/rpm/max/temp/auto) require root.
 //
 //   fanctl                 read status (fans + CPU temp)
@@ -11,7 +11,7 @@
 //   fanctl auto            hand control back to macOS
 
 import Foundation
-import AmberTempSMC
+import AmberCoolSMC
 
 let EMERGENCY_C = 95.0   // force max above this regardless of setpoint
 let DEFAULT_MARGIN = 7.5 // ramp half-width for temp mode
@@ -49,7 +49,7 @@ func installSafetyHandlers() {
     signal(SIGTERM, restore)
 }
 
-let CONFIG_PATH = "/usr/local/etc/amber-temp/mode"
+let CONFIG_PATH = "/usr/local/etc/amber-cool/mode"
 
 func ensureManual(_ smc: SMC) {
     let md = smc.fans().first?.mode ?? 0
@@ -184,7 +184,7 @@ case "daemon":
     let path = args.count > 1 ? args[1] : CONFIG_PATH
     installSafetyHandlers()   // restore auto on SIGTERM/SIGINT
     var ema: Double? = nil
-    FileHandle.standardError.write(Data("amber-temp daemon started (config: \(path))\n".utf8))
+    FileHandle.standardError.write(Data("amber-cool daemon started (config: \(path))\n".utf8))
     let iso = ISO8601DateFormatter()
     while true {
         let line = (try? String(contentsOfFile: path, encoding: .utf8))?
@@ -202,7 +202,7 @@ case "daemon":
 
 default:
     fail("""
-    fanctl — amber-temp fan control
+    fanctl — amber-cool fan control
       fanctl [read]          status
       fanctl watch [secs]    live loop
       fanctl scale <0-10>    coarse scale          (root)

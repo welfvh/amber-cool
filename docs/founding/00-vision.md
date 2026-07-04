@@ -1,10 +1,10 @@
-# amber-temp — Founding Vision (verbatim)
+# amber-cool — Founding Vision (verbatim)
 
 > Captured 2026-06-22. Raw, unedited. This file preserves the original ask and is never rewritten.
 
 ## The ask (verbatim)
 
-> amber-temp: a simple mac menu bar app that controls your fans. you can set it on a scale of 0-10, custom rpm, as well as temperature targets (each of these are distinct modes). research how to do this properly.
+> amber-cool: a simple mac menu bar app that controls your fans. you can set it on a scale of 0-10, custom rpm, as well as temperature targets (each of these are distinct modes). research how to do this properly.
 
 ## Reading
 

@@ -1,34 +1,38 @@
 #!/bin/bash
-# Build amber-temp.app (menu bar / LSUIElement) and sign it.
+# Build "Amber Cool.app" (menu bar / LSUIElement) and sign it.
 # Uses Developer ID if available (release), else ad-hoc (local testing).
-#   ./app/bundle.sh
+#   ./app/bundle.sh [--notarize]
+# --notarize: submit to Apple notary service and staple (requires keychain profile "notarytool").
 set -euo pipefail
+
+NOTARIZE=0
+[[ "${1:-}" == "--notarize" ]] && NOTARIZE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$REPO_DIR"
 
 echo "==> Building release"
-swift build -c release --product AmberTempApp >/dev/null
+swift build -c release --product AmberCoolApp >/dev/null
 
-APP="build/amber-temp.app"
+APP="build/Amber Cool.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp ".build/release/AmberTempApp" "$APP/Contents/MacOS/amber-temp"
+cp ".build/release/AmberCoolApp" "$APP/Contents/MacOS/amber-cool"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>amber-temp</string>
-    <key>CFBundleDisplayName</key><string>amber-temp</string>
-    <key>CFBundleIdentifier</key><string>co.welf.amber-temp</string>
-    <key>CFBundleExecutable</key><string>amber-temp</string>
+    <key>CFBundleName</key><string>Amber Cool</string>
+    <key>CFBundleDisplayName</key><string>Amber Cool</string>
+    <key>CFBundleIdentifier</key><string>co.welf.amber-cool</string>
+    <key>CFBundleExecutable</key><string>amber-cool</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
@@ -45,6 +49,17 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEVID"; then
 else
     echo "==> Developer ID not found — ad-hoc signing (local testing only)"
     codesign --force --sign - "$APP" >/dev/null
+fi
+
+if [[ $NOTARIZE -eq 1 ]]; then
+    echo "==> Notarizing (takes a few minutes)"
+    ZIP="build/AmberCool-notarize.zip"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+    xcrun notarytool submit "$ZIP" --keychain-profile "notarytool" --wait --timeout 20m
+    rm -f "$ZIP"
+    echo "==> Stapling ticket"
+    xcrun stapler staple "$APP"
+    spctl --assess --type execute -v "$APP" || true
 fi
 
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Authority" | head -3 || true

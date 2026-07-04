@@ -1,4 +1,4 @@
-// amber-temp — menu bar app. A native dropdown menu (MenuBarExtra .menu style) showing
+// amber-cool — menu bar app. A native dropdown menu (MenuBarExtra .menu style) showing
 // live fan/temp status and switching between the three modes. Menu items deliver clicks
 // reliably (the .window popover style did not). Fan writes are done by the root daemon
 // (`fanctl daemon`); the app reads the SMC directly (no root) and writes the mode to the
@@ -6,10 +6,17 @@
 
 import SwiftUI
 import AppKit
-import AmberTempSMC
+import ServiceManagement
+import AmberCoolSMC
 
-let MODE_CONFIG_PATH = "/usr/local/etc/amber-temp/mode"
-let APP_LOG_PATH = NSString(string: "~/Library/Logs/amber-temp-app.log").expandingTildeInPath
+// Prefer the amber-cool config; fall back to the pre-rename amber-temp path so the app
+// keeps controlling a daemon that hasn't been reinstalled under the new name yet.
+let MODE_CONFIG_PATH: String = {
+    let new = "/usr/local/etc/amber-cool/mode"
+    let old = "/usr/local/etc/amber-temp/mode"
+    return FileManager.default.fileExists(atPath: new) ? new : old
+}()
+let APP_LOG_PATH = NSString(string: "~/Library/Logs/amber-cool-app.log").expandingTildeInPath
 
 func appLog(_ s: String) {
     let line = ISO8601DateFormatter().string(from: Date()) + " " + s + "\n"
@@ -32,6 +39,7 @@ final class FanModel: ObservableObject {
     @Published var currentMode: String = "—"
     @Published var daemonInstalled = false
     @Published var topProcs: [HeatProc] = []      // user-owned CPU hogs (heat sources)
+    @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     private var prevCpu: [Int32: UInt64] = [:]    // pid -> cumulative cpu ns, last sample
     private var prevCpuWall: Double = 0           // monotonic ns of last sample
@@ -39,6 +47,12 @@ final class FanModel: ObservableObject {
     init() {
         let opened = smc.open()
         appLog("app start: smc.open()=\(opened) fanCount=\(smc.fanCount)")
+        // Auto-enroll as a login item on first run — a menu bar app that isn't running
+        // is invisible, which defeats the point. The menu has a toggle to opt out.
+        if SMAppService.mainApp.status == .notRegistered {
+            do { try SMAppService.mainApp.register() } catch { appLog("login item register failed: \(error)") }
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
         refresh()
         // Default-mode timer ON PURPOSE: it is SUSPENDED while the menu is open (event tracking),
         // so the open NSMenu stays static and clickable. Refreshing @Published during tracking
@@ -118,7 +132,17 @@ final class FanModel: ObservableObject {
         }
         let rpm = fans.map(\.actual).max() ?? 0
         if skinTemp > 0 { return String(format: "%.0f° %.1fk", skinTemp, rpm / 1000) }
-        return cpuTemp > 0 ? String(format: "%.0f° %.1fk", cpuTemp, rpm / 1000) : "amber-temp"
+        return cpuTemp > 0 ? String(format: "%.0f° %.1fk", cpuTemp, rpm / 1000) : "Amber Cool"
+    }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+        } catch {
+            appLog("login item \(on ? "register" : "unregister") failed: \(error)")
+        }
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     /// Write a mode line the daemon will pick up. IMPORTANT: write in place (atomically:false) —
@@ -204,13 +228,17 @@ struct MenuContent: View {
         if !model.daemonInstalled {
             Text("⚠︎ daemon not installed — changes won't apply")
         }
+        Toggle("Launch at login", isOn: Binding(
+            get: { model.launchAtLogin },
+            set: { model.setLaunchAtLogin($0) }
+        ))
         Button("Refresh") { model.refresh() }
-        Button("Quit amber-temp") { NSApplication.shared.terminate(nil) }
+        Button("Quit Amber Cool") { NSApplication.shared.terminate(nil) }
     }
 }
 
 @main
-struct AmberTempApp: App {
+struct AmberCoolApp: App {
     @StateObject private var model = FanModel()
 
     var body: some Scene {

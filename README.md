@@ -1,10 +1,10 @@
-# amber-temp
+# amber-cool
 
 A simple macOS menu bar app to control your Mac's fans, with three distinct modes:
 
 1. **Scale 0–10** — coarse slider from quiet (min) to max.
 2. **Custom RPM** — set an exact fan speed.
-3. **Temperature target** — pick a temperature; amber-temp drives the fans to hold it.
+3. **Temperature target** — pick a temperature; amber-cool drives the fans to hold it.
 
 Status: **v1 built** — SMC core, `fanctl` CLI, a persistent root daemon, and a signed menu bar app. The fan-write path needs root; engage it via the installer (one `sudo`). See:
 - [`RESEARCH.md`](RESEARCH.md) — how Mac fan control actually works (SMC, Apple Silicon, signing, safety), validated live on an M4 Pro.
@@ -35,10 +35,10 @@ killall "Macs Fan Control" 2>/dev/null; sudo ./.build/release/fanctl max
 sudo ./daemon/install.sh max         # or: "scale 7", "rpm 4000", "temp 65"
 
 # Change mode any time (no root — file is made user-writable by the installer):
-echo 'scale 7' > /usr/local/etc/amber-temp/mode
+echo 'scale 7' > /usr/local/etc/amber-cool/mode
 
 # Menu bar app (live status + mode switching; drives the daemon):
-./app/bundle.sh && open build/amber-temp.app
+./app/bundle.sh && open build/amber-cool.app
 
 # Stop everything, restore macOS auto:
 sudo ./daemon/uninstall.sh
@@ -46,9 +46,9 @@ sudo ./daemon/uninstall.sh
 
 ## Architecture (v1)
 
-- **`AmberTempSMC`** — shared SMC read/write core (Ftst handshake, codecs, 3-mode math, M4 temp sensors).
+- **`AmberCoolSMC`** — shared SMC read/write core (Ftst handshake, codecs, 3-mode math, M4 temp sensors).
 - **`fanctl`** — CLI: reads unprivileged; `scale`/`rpm`/`max`/`temp`/`auto`/`daemon` require root.
-- **daemon** — `fanctl daemon` as a root LaunchDaemon, holding the mode from a user-writable config file (`/usr/local/etc/amber-temp/mode`); re-engages after wake, emergency-max on overheat, restore-auto on stop.
+- **daemon** — `fanctl daemon` as a root LaunchDaemon, holding the mode from a user-writable config file (`/usr/local/etc/amber-cool/mode`); re-engages after wake, emergency-max on overheat, restore-auto on stop.
 - **menu bar app** — SwiftUI `MenuBarExtra`, reads SMC directly for live status, writes the config file to switch modes. Signed with Developer ID.
 
 v1 uses a LaunchDaemon + config file (works today, no notarization needed to run locally). The `SMAppService` + XPC self-contained-helper packaging described in `ARCHITECTURE.md` is the v2 hardening path (no Terminal, code-signing-validated IPC).

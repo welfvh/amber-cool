@@ -3,14 +3,14 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>co.welf.amber-temp</string>
+    <string>co.welf.amber-cool</string>
 
     <!-- Runs the fan-control daemon as root; it reads its mode from the config file. -->
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/fanctl</string>
         <string>daemon</string>
-        <string>/usr/local/etc/amber-temp/mode</string>
+        <string>/usr/local/etc/amber-cool/mode</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -21,9 +21,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/usr/local/var/log/amber-temp.log</string>
+    <string>/usr/local/var/log/amber-cool.log</string>
     <key>StandardErrorPath</key>
-    <string>/usr/local/var/log/amber-temp.log</string>
+    <string>/usr/local/var/log/amber-cool.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

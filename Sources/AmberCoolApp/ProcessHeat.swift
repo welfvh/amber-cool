@@ -27,7 +27,7 @@ enum ProcessHeat {
     static let denylist: Set<String> = [
         "WindowServer", "loginwindow", "Dock", "SystemUIServer", "ControlCenter",
         "NotificationCenter", "Spotlight", "Finder", "WindowManager", "launchd",
-        "cfprefsd", "coreaudiod", "amber-temp"
+        "cfprefsd", "coreaudiod", "amber-cool"
     ]
 
     /// Nanoseconds per mach absolute-time tick. On Apple Silicon this is ~41.67 (numer 125 / denom 3);

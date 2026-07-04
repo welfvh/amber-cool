@@ -1,4 +1,4 @@
-// amber-temp SMC probe — READ-ONLY. Confirms the SMC substrate on this Mac.
+// amber-cool SMC probe — READ-ONLY. Confirms the SMC substrate on this Mac.
 // Reads fan count, per-fan RPM/min/max/target/mode, Ftst presence, and a few temps.
 // Does NOT write anything. No root required for reads.
 //
@@ -126,7 +126,7 @@ func show(_ k: String) -> String {
     return "raw \(Array(r.bytes.prefix(r.size))) [\(r.dataType)]"
 }
 
-print("=== amber-temp SMC probe (READ-ONLY) ===\n")
+print("=== amber-cool SMC probe (READ-ONLY) ===\n")
 
 if let fnum = readKey("FNum"), let n = decode(fnum) {
     let count = Int(n)

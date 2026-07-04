@@ -1,4 +1,4 @@
-# amber-temp — Recommended Architecture & Build Plan
+# amber-cool — Recommended Architecture & Build Plan
 
 Derived from [`RESEARCH.md`](RESEARCH.md). Target: Apple Silicon, macOS 26 (floor macOS 13).
 Distribution: Developer ID outside the App Store (Potential, Inc. — Team `6Y24LA63S7`).
@@ -9,7 +9,7 @@ Distribution: Developer ID outside the App Store (Potential, Inc. — Team `6Y24
 
 ```
 ┌─────────────────────────────┐         XPC (validated)        ┌──────────────────────────┐
-│  amber-temp.app             │  ───────────────────────────▶  │  amber-temp Helper (root)│
+│  amber-cool.app             │  ───────────────────────────▶  │  amber-cool Helper (root)│
 │  • MenuBarExtra UI          │   setFanMode / setSpeed /      │  • SMAppService daemon   │
 │  • mode + policy logic      │   resetToAuto / heartbeat      │  • SMC read+WRITE        │
 │  • reads SMC directly       │  ◀───────────────────────────  │  • Ftst handshake        │
@@ -26,14 +26,14 @@ Why split: SMC writes require root; everything else doesn't. Keep privilege in t
 ## 2. Bundle layout & registration
 
 ```
-amber-temp.app/Contents/
-  MacOS/amber-temp
-  Library/LaunchDaemons/co.welf.amber-temp.helper.plist
-  Library/HelperTools/co.welf.amber-temp.helper
+amber-cool.app/Contents/
+  MacOS/amber-cool
+  Library/LaunchDaemons/co.welf.amber-cool.helper.plist
+  Library/HelperTools/co.welf.amber-cool.helper
 ```
-- Register: `SMAppService.daemon(plistName: "co.welf.amber-temp.helper.plist").register()`.
-- Handle `.requiresApproval` → `SMAppService.openSystemSettingsLoginItems()` with in-app guidance ("enable amber-temp helper in Login Items").
-- Plist: `Label`, `BundleProgram=Contents/Library/HelperTools/...`, `MachServices={co.welf.amber-temp.helper:true}`, `AssociatedBundleIdentifiers=[co.welf.amber-temp]`.
+- Register: `SMAppService.daemon(plistName: "co.welf.amber-cool.helper.plist").register()`.
+- Handle `.requiresApproval` → `SMAppService.openSystemSettingsLoginItems()` with in-app guidance ("enable amber-cool helper in Login Items").
+- Plist: `Label`, `BundleProgram=Contents/Library/HelperTools/...`, `MachServices={co.welf.amber-cool.helper:true}`, `AssociatedBundleIdentifiers=[co.welf.amber-cool]`.
 
 ## 3. Shared SMC core (`SMCKit.swift`)
 
@@ -90,7 +90,7 @@ Probe both `F0Md`/`F0md` casings. On `Ftst` absent (some M5), skip step 1.
 
 ## 9. Coexistence
 
-Macs Fan Control + FanBar are installed and will fight over SMC. amber-temp should detect a foreign manual state on launch (probe shows `F0Md`=1 / `Ftst`=1 set by another app) and warn / offer to take over. For dev: quit Macs Fan Control + FanBar first.
+Macs Fan Control + FanBar are installed and will fight over SMC. amber-cool should detect a foreign manual state on launch (probe shows `F0Md`=1 / `Ftst`=1 set by another app) and warn / offer to take over. For dev: quit Macs Fan Control + FanBar first.
 
 ## 10. Phased build plan (each step verifiable)
 
@@ -102,7 +102,7 @@ Macs Fan Control + FanBar are installed and will fight over SMC. amber-temp shou
 
 ## 11. Open decisions (for Welf)
 
-- **Build it, or stop at research?** You already run Macs Fan Control + FanBar. amber-temp's value = amber-ecosystem fit + your exact 3-mode UX. Confirm before I build.
+- **Build it, or stop at research?** You already run Macs Fan Control + FanBar. amber-cool's value = amber-ecosystem fit + your exact 3-mode UX. Confirm before I build.
 - **App Store ever?** If no (recommended for a fan tool), Developer ID + unsandboxed = simplest. App Store is effectively impossible for SMC writes.
 - **Amber visual integration** — standalone menu bar app, or fold into an existing amber surface (amber-overlay / okay-claude menu bar)?
-- **Bundle id / name** — assumed `co.welf.amber-temp`; confirm.
+- **Bundle id / name** — assumed `co.welf.amber-cool`; confirm.

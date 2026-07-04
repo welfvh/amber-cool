@@ -1,4 +1,4 @@
-// AmberTempSMC — shared SMC core for amber-temp.
+// AmberCoolSMC — shared SMC core for amber-cool.
 // Read (unprivileged) + write (root) of AppleSMC keys, plus the Apple Silicon
 // Ftst manual-control handshake, fan/temp models, and the three-mode RPM math.
 //
