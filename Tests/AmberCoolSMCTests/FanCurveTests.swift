@@ -45,9 +45,12 @@ final class FanCurveTests: XCTestCase {
     }
 
     func testDieProtectionBlendsIn() {
-        let d92 = FanCurve.demand(temp: 30, die: 92, setpoint: sp, margin: m, previous: nil)
-        XCTAssertGreaterThan(d92, 0)   // protection active below the hard threshold
-        XCTAssertLessThan(d92, 1)      // but not pinned
+        let d98 = FanCurve.demand(temp: 30, die: 98, setpoint: sp, margin: m, previous: nil)
+        XCTAssertGreaterThan(d98, 0)   // protection active below the hard threshold
+        XCTAssertLessThan(d98, 1)      // but not pinned
+        // Die in the low 90s is NORMAL sustained load on this chip — the setpoint stays in
+        // charge there (2026-07-14: protection below 95 held hands 8°C under the target).
+        XCTAssertEqual(FanCurve.demand(temp: 30, die: 92, setpoint: sp, margin: m, previous: nil), 0)
     }
 
     func testSlewLimitsBothDirections() {
@@ -89,18 +92,22 @@ final class FanCurveTests: XCTestCase {
         XCTAssertEqual(FanCurve.advanceEnvelope(90, die: 90.2), 90.2)       // small moves track exactly
     }
 
-    func testEnvelopeFloorHoldsFansThroughValleys() {
-        // hot session (envelope armed at 93), die momentarily dips to 85, hands cool:
-        // without the floor demand would glide toward 0 — with it, fans hold at the floor
+    func testEnvelopeHoldsProtectionThroughValleys() {
+        // hot session (envelope armed at 99), die momentarily dips to 85, hands cool:
+        // protection keys on the envelope, so demand holds instead of gliding to 0
+        let held = FanCurve.smoothstep((99 - FanCurve.emergencySoftC) / (FanCurve.emergencyC - FanCurve.emergencySoftC))
         let d = FanCurve.demand(temp: 30, die: 85, setpoint: sp, margin: m,
-                                previous: FanCurve.envelopeFloorMax, envelope: 93)
-        XCTAssertEqual(d, FanCurve.envelopeFloorMax, accuracy: 1e-9)
-        // disarmed envelope → floor off, old behavior intact
-        XCTAssertEqual(FanCurve.envelopeFloor(FanCurve.envelopeStartC), 0)
-        XCTAssertEqual(FanCurve.envelopeFloor(nil), 0)
-        // protection and emergency still rise above the floor
-        XCTAssertEqual(FanCurve.demand(temp: 30, die: 96, setpoint: sp, margin: m,
-                                       previous: 1, envelope: 93), 1)
+                                previous: held, envelope: 99)
+        XCTAssertEqual(d, held, accuracy: 1e-9)
+        XCTAssertGreaterThan(held, 0.5)
+        // envelope below the protection band → NO standing floor: the setpoint is the only
+        // authority (the v1 84–93°C floor overrode "temp 41 skin" all day)
+        XCTAssertEqual(FanCurve.demand(temp: 30, die: 91, setpoint: sp, margin: m,
+                                       previous: nil, envelope: 93), 0)
+        // a raw spike above the envelope still engages immediately
+        let spike = FanCurve.demand(temp: 30, die: 101, setpoint: sp, margin: m,
+                                    previous: nil, envelope: 96)
+        XCTAssertGreaterThan(spike, 0.9)
     }
 
     func testNegativeMarginNeverInvertsCurve() {

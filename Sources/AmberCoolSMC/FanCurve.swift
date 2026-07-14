@@ -13,9 +13,13 @@
 public enum FanCurve {
 
     /// Hard backstop: die at/above this drives demand to max at the emergency up-slew rate.
-    public static let emergencyC = 95.0
+    /// Apple Silicon self-throttles ~105°C; the log shows 95–98°C is NORMAL sustained load on
+    /// this machine, so treating 95 as an emergency made die protection override the user's
+    /// setpoint most of the day (2026-07-14: "temp 41 skin" held hands at 32°C — the knob did
+    /// nothing). Protection is a backstop for the silicon, not a second thermostat.
+    public static let emergencyC = 102.0
     /// Die protection starts blending in here, reaching full at `emergencyC`.
-    public static let emergencySoftC = 90.0
+    public static let emergencySoftC = 95.0
     /// Max demand change per tick, as a fraction of the fan range (~500 rpm up, ~165 rpm down
     /// per 2 s tick on a 5500 rpm span). Asymmetric: heat is urgent, quiet can wait.
     public static let slewUpPerTick = 0.09
@@ -29,17 +33,15 @@ public enum FanCurve {
     /// margin is floored here, at the math layer, protecting every caller.
     public static let minMarginC = 0.5
 
-    /// Sustained-heat floor (proactive cooling). The die under a hot work session oscillates
-    /// (89→101°C and back, tens of seconds per swing); chasing it makes the fans cycle, and the
-    /// ear keys on that modulation far more than on steady noise. A slow ENVELOPE of die temp
-    /// arms a demand floor while the session is hot — fans hold steady through the valleys and
-    /// the next spike starts from already-moving air — then decays over ~10 min once work ends.
-    /// Rise is rate-limited so a single brief spike (one compile) barely arms it.
-    public static let envelopeRiseCPerTick = 0.5   // toward a hotter die: armed after ~1–2 min sustained heat
-    public static let envelopeFallCPerTick = 0.03  // decay: ~0.9°C/min, disarms ~10 min after the session
-    public static let envelopeStartC = 84.0        // floor begins here…
-    public static let envelopeFullC = 93.0         // …tops out here…
-    public static let envelopeFloorMax = 0.75      // …below full blast: peaks still stand out of the floor
+    /// Sustained-heat envelope (anti-cycling). The die under load oscillates (89→101°C and back,
+    /// tens of seconds per swing); protection chasing the raw reading makes the fans cycle, and
+    /// the ear keys on that modulation far more than on steady noise. A slow ENVELOPE of die temp
+    /// feeds the protection ramp alongside the raw reading — protection holds steady through the
+    /// valleys, then decays over ~4 min once the heat ends. It engages nothing below the
+    /// protection band: a first version mapped its own lower band (84→93°C) to a standing floor,
+    /// which overrode the hands setpoint all day — the knob stopped meaning anything.
+    public static let envelopeRiseCPerTick = 0.5   // toward a hotter die: tracks a sustained climb fast
+    public static let envelopeFallCPerTick = 0.03  // decay: ~0.9°C/min
 
     /// Advance the die-temp envelope by one tick. Seeds at the current die reading (a daemon
     /// restarted mid-session arms immediately); holds through missing readings.
@@ -48,12 +50,6 @@ public enum FanCurve {
         guard let e = envelope else { return die }
         return die > e ? Swift.min(e + envelopeRiseCPerTick, die)
                        : Swift.max(e - envelopeFallCPerTick, die)
-    }
-
-    /// Demand floor for a given envelope value.
-    public static func envelopeFloor(_ envelope: Double?) -> Double {
-        guard let e = envelope else { return 0 }
-        return envelopeFloorMax * smoothstep((e - envelopeStartC) / (envelopeFullC - envelopeStartC))
     }
 
     /// Hermite smoothstep, clamped to [0,1]: zero slope at both ends.
@@ -67,13 +63,16 @@ public enum FanCurve {
     /// - die: raw hottest CPU-die reading, if available (drives the protection curve)
     /// - previous: last tick's returned demand; pass nil on the first tick or after a reset
     ///   (mode change, wake from sleep) to jump straight to the computed demand.
-    /// - envelope: sustained-heat envelope from `advanceEnvelope` (nil = floor disabled)
+    /// - envelope: sustained-heat envelope from `advanceEnvelope` (nil = raw die only)
     public static func demand(temp: Double, die: Double?, setpoint: Double, margin: Double,
                               previous: Double?, envelope: Double? = nil) -> Double {
         let m = Swift.max(margin, minMarginC)   // never let a bad margin invert the curve
         let want = smoothstep((temp - (setpoint - m)) / (2 * m))
-        let protect = die.map { smoothstep(($0 - emergencySoftC) / (emergencyC - emergencySoftC)) } ?? 0
-        var d = Swift.max(want, Swift.max(protect, envelopeFloor(envelope)))
+        // Protection keys on the hotter of raw die (spikes engage now) and its envelope
+        // (valleys don't disengage) — steady under oscillating load, zero below the band.
+        let hot = Swift.max(die ?? -.infinity, envelope ?? -.infinity)
+        let protect = hot > -.infinity ? smoothstep((hot - emergencySoftC) / (emergencyC - emergencySoftC)) : 0
+        var d = Swift.max(want, protect)
         if let prev = previous {
             let upCap = (die ?? 0) >= emergencyC ? slewUpEmergencyPerTick : slewUpPerTick
             d = d > prev ? Swift.min(prev + upCap, d)
