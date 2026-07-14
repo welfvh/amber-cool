@@ -21,5 +21,9 @@ let package = Package(
             name: "AmberCoolApp",
             dependencies: ["AmberCoolSMC"]
         ),
+        .testTarget(
+            name: "AmberCoolSMCTests",
+            dependencies: ["AmberCoolSMC"]
+        ),
     ]
 )

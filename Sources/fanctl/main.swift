@@ -13,7 +13,6 @@
 import Foundation
 import AmberCoolSMC
 
-let EMERGENCY_C = 95.0   // force max above this regardless of setpoint
 let DEFAULT_MARGIN = 7.5 // ramp half-width for temp mode
 let TEMP_INTERVAL = 2.0  // seconds between recompute (TG Pro default)
 
@@ -60,24 +59,9 @@ func ensureManual(_ smc: SMC) {
 /// the die swings wide.
 func defaultMargin(_ location: String) -> Double { location.lowercased() == "cpu" ? DEFAULT_MARGIN : 3.0 }
 
-/// Hold a target temperature at a chosen LOCATION ("skin"/"hands", "cpu", or an explicit sensor key).
-/// CPU-die emergency protection ALWAYS runs first — even when controlling toward hand temp, a burst
-/// must never cook the silicon while your palms stay cool.
-func applyTempControl(_ smc: SMC, setpoint: Double, location: String, margin: Double, ema: inout Double?) {
-    if let die = smc.cpuTemperature(), die >= EMERGENCY_C { _ = smc.applyMax(); return }
-    guard let raw = smc.controlTemperature(location) else { _ = smc.applyMax(); return }  // fail-safe: cool hard
-    ema = ema == nil ? raw : (ema! * 0.7 + raw * 0.3)
-    let temp = ema!
-    let tLow = setpoint - margin, tHigh = setpoint + margin
-    for f in smc.fans() {
-        let frac = temp <= tLow ? 0 : (temp >= tHigh ? 1 : (temp - tLow) / (tHigh - tLow))
-        _ = smc.setTarget(f.index, rpm: f.min + (f.max - f.min) * frac)
-    }
-}
-
 /// Apply a config line like "max", "scale 7", "rpm 4000", "temp 35 skin", "temp 65 cpu 8", or "auto".
 /// temp format: `temp <targetC> [location] [margin]`  (location defaults to "skin" — heat to your hands).
-func applyModeString(_ line: String, _ smc: SMC, ema: inout Double?) {
+func applyModeString(_ line: String, _ smc: SMC, loop: TempLoop) {
     let parts = line.split(separator: " ").map(String.init)
     switch parts.first?.lowercased() ?? "max" {
     case "auto":  _ = smc.restoreAuto()
@@ -88,10 +72,20 @@ func applyModeString(_ line: String, _ smc: SMC, ema: inout Double?) {
         if parts.count > 1, let sp = Double(parts[1]) {
             let location = parts.count > 2 ? parts[2] : "skin"
             let margin = parts.count > 3 ? (Double(parts[3]) ?? defaultMargin(location)) : defaultMargin(location)
-            applyTempControl(smc, setpoint: sp, location: location, margin: margin, ema: &ema)
+            loop.tick(smc, setpoint: sp, location: location, margin: margin)
         }
     default: ensureManual(smc); _ = smc.applyMax()
     }
+}
+
+/// Loop-state identity of a config line: "temp:<location>" for temp modes, else the mode word.
+/// A setpoint-only change ("temp 37 skin" -> "temp 38 skin") keeps the key — slew/EMA state
+/// stays and the loop glides to the new target; a location or mode-kind switch resets it.
+func resetKey(_ line: String) -> String {
+    let parts = line.split(separator: " ").map(String.init)
+    let kind = parts.first?.lowercased() ?? "max"
+    guard kind == "temp" else { return kind }
+    return "temp:" + (parts.count > 2 ? parts[2].lowercased() : "skin")
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -136,16 +130,16 @@ case "temp":
     let margin = args.count > 3 ? (Double(args[3]) ?? defaultMargin(location)) : defaultMargin(location)
     installSafetyHandlers()
     guard smc.engageManual() else { fail("Failed to engage manual control.") }
-    print(String(format: "Holding %@ ~ %.0f C (ramp %.0f-%.0f). Ctrl-C to restore auto.",
+    print(String(format: "Holding %@ ~ %.0f C (soft ramp %.0f-%.0f). Ctrl-C to restore auto.",
                  location, setpoint, setpoint - margin, setpoint + margin))
-    var ema: Double? = nil
+    let loop = TempLoop()
     while true {
         guard smc.controlTemperature(location) != nil else {
             _ = smc.restoreAuto(); fail("Lost '\(location)' temperature reading - reverted to auto for safety.")
         }
-        applyTempControl(smc, setpoint: setpoint, location: location, margin: margin, ema: &ema)
+        loop.tick(smc, setpoint: setpoint, location: location, margin: margin)
         let tgt = smc.fans().first?.target ?? 0
-        print(String(format: "  %@ %.1f C -> %.0f rpm", location, ema ?? 0, tgt))
+        print(String(format: "  %@ %.1f C -> %.0f rpm", location, loop.smoothed ?? 0, tgt))
         Thread.sleep(forTimeInterval: TEMP_INTERVAL)
     }
 
@@ -183,14 +177,17 @@ case "daemon":
     requireRoot()
     let path = args.count > 1 ? args[1] : CONFIG_PATH
     installSafetyHandlers()   // restore auto on SIGTERM/SIGINT
-    var ema: Double? = nil
+    let loop = TempLoop()
+    var lastKey: String? = nil
     FileHandle.standardError.write(Data("amber-cool daemon started (config: \(path))\n".utf8))
     let iso = ISO8601DateFormatter()
     while true {
         let line = (try? String(contentsOfFile: path, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "max"
         let mode = line.isEmpty ? "max" : line
-        applyModeString(mode, smc, ema: &ema)
+        let key = resetKey(mode)
+        if key != lastKey { loop.reset(); lastKey = key }   // stale EMA/slew must not survive a location/kind switch
+        applyModeString(mode, smc, loop: loop)
         let hands = smc.skinTemperature().map { String(format: "%.1f", $0) } ?? "—"
         let cpu = smc.cpuTemperature().map { String(format: "%.1f", $0) } ?? "—"
         let targets = smc.fans().map { Int($0.target) }
