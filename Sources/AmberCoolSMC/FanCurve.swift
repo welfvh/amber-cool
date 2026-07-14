@@ -20,6 +20,10 @@ public enum FanCurve {
     /// per 2 s tick on a 5500 rpm span). Asymmetric: heat is urgent, quiet can wait.
     public static let slewUpPerTick = 0.09
     public static let slewDownPerTick = 0.03
+    /// Smallest usable ramp half-width. A zero or negative margin (user-writable config typo like
+    /// "temp 37 skin -3") would invert the ramp — hot readings commanding MINIMUM speed — so the
+    /// margin is floored here, at the math layer, protecting every caller.
+    public static let minMarginC = 0.5
 
     /// Hermite smoothstep, clamped to [0,1]: zero slope at both ends.
     public static func smoothstep(_ x: Double) -> Double {
@@ -34,7 +38,8 @@ public enum FanCurve {
     ///   (mode change, wake from sleep) to jump straight to the computed demand.
     public static func demand(temp: Double, die: Double?, setpoint: Double, margin: Double,
                               previous: Double?) -> Double {
-        let want = smoothstep((temp - (setpoint - margin)) / (2 * margin))
+        let m = Swift.max(margin, minMarginC)   // never let a bad margin invert the curve
+        let want = smoothstep((temp - (setpoint - m)) / (2 * m))
         let protect = die.map { smoothstep(($0 - emergencySoftC) / (emergencyC - emergencySoftC)) } ?? 0
         var d = Swift.max(want, protect)
         if let prev = previous, (die ?? 0) < emergencyC {

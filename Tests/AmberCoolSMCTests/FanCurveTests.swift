@@ -68,4 +68,12 @@ final class FanCurveTests: XCTestCase {
         let d = FanCurve.demand(temp: 45, die: 60, setpoint: sp, margin: m, previous: nil)
         XCTAssertEqual(d, 1)
     }
+
+    func testNegativeMarginNeverInvertsCurve() {
+        // config typo "temp 37 skin -3": unclamped, (45-40)/(2*-3) → 0 and a hot machine idles
+        // its fans. The margin floor must keep hot = max, cold = quiet.
+        XCTAssertEqual(FanCurve.demand(temp: 45, die: 60, setpoint: sp, margin: -3, previous: nil), 1)
+        XCTAssertEqual(FanCurve.demand(temp: 30, die: 60, setpoint: sp, margin: -3, previous: nil), 0)
+        XCTAssertEqual(FanCurve.demand(temp: 45, die: 60, setpoint: sp, margin: 0, previous: nil), 1)
+    }
 }
