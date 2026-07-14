@@ -24,13 +24,16 @@ public final class TempLoop {
 
     public private(set) var smoothed: Double?
     private(set) var demand: Double?
+    public private(set) var envelope: Double?
     private var lastTick: Date?
     /// Injectable clock — the sleep-gap reset must be testable without waiting 60 s.
     var now: () -> Date = { Date() }
 
     public init() {}
 
-    public func reset() { smoothed = nil; demand = nil; lastTick = nil }
+    // Envelope resets too: it re-seeds at the current die on the next tick, so a still-hot
+    // machine re-arms instantly while a cooled-down one (post-sleep) starts disarmed.
+    public func reset() { smoothed = nil; demand = nil; envelope = nil; lastTick = nil }
 
     public func tick(_ smc: FanControlling, setpoint: Double, location: String, margin: Double) {
         // 60 s: only a real sleep gap resets. Load-induced loop stalls (SMC calls blocking for
@@ -41,8 +44,11 @@ public final class TempLoop {
             _ = smc.applyMax(); demand = 1; return   // fail-safe: cool hard
         }
         smoothed = smoothed == nil ? raw : (smoothed! * 0.7 + raw * 0.3)
-        let d = FanCurve.demand(temp: smoothed!, die: smc.cpuTemperature(),
-                                setpoint: setpoint, margin: margin, previous: demand)
+        let die = smc.cpuTemperature()
+        envelope = FanCurve.advanceEnvelope(envelope, die: die)
+        let d = FanCurve.demand(temp: smoothed!, die: die,
+                                setpoint: setpoint, margin: margin, previous: demand,
+                                envelope: envelope)
         demand = d
         for f in smc.fans() {
             let rpm = f.min + (f.max - f.min) * d

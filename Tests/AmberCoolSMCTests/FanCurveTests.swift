@@ -80,6 +80,29 @@ final class FanCurveTests: XCTestCase {
         XCTAssertEqual(d, 1)
     }
 
+    func testEnvelopeSeedsAndRateLimits() {
+        XCTAssertNil(FanCurve.advanceEnvelope(nil, die: nil))
+        XCTAssertEqual(FanCurve.advanceEnvelope(nil, die: 92), 92)          // seeds at current die
+        XCTAssertEqual(FanCurve.advanceEnvelope(90, die: 101)!, 90 + FanCurve.envelopeRiseCPerTick)
+        XCTAssertEqual(FanCurve.advanceEnvelope(93, die: 60)!, 93 - FanCurve.envelopeFallCPerTick)
+        XCTAssertEqual(FanCurve.advanceEnvelope(90, die: nil), 90)          // holds through lost reading
+        XCTAssertEqual(FanCurve.advanceEnvelope(90, die: 90.2), 90.2)       // small moves track exactly
+    }
+
+    func testEnvelopeFloorHoldsFansThroughValleys() {
+        // hot session (envelope armed at 93), die momentarily dips to 85, hands cool:
+        // without the floor demand would glide toward 0 — with it, fans hold at the floor
+        let d = FanCurve.demand(temp: 30, die: 85, setpoint: sp, margin: m,
+                                previous: FanCurve.envelopeFloorMax, envelope: 93)
+        XCTAssertEqual(d, FanCurve.envelopeFloorMax, accuracy: 1e-9)
+        // disarmed envelope → floor off, old behavior intact
+        XCTAssertEqual(FanCurve.envelopeFloor(FanCurve.envelopeStartC), 0)
+        XCTAssertEqual(FanCurve.envelopeFloor(nil), 0)
+        // protection and emergency still rise above the floor
+        XCTAssertEqual(FanCurve.demand(temp: 30, die: 96, setpoint: sp, margin: m,
+                                       previous: 1, envelope: 93), 1)
+    }
+
     func testNegativeMarginNeverInvertsCurve() {
         // config typo "temp 37 skin -3": unclamped, (45-40)/(2*-3) → 0 and a hot machine idles
         // its fans. The margin floor must keep hot = max, cold = quiet.

@@ -192,7 +192,8 @@ case "daemon":
         let cpu = smc.cpuTemperature().map { String(format: "%.1f", $0) } ?? "—"
         let targets = smc.fans().map { Int($0.target) }
         let actual = smc.fans().map { Int($0.actual) }
-        print("\(iso.string(from: Date())) [daemon] mode='\(mode)' hands=\(hands) cpu=\(cpu) targets=\(targets) actual=\(actual)")
+        let env = loop.envelope.map { String(format: "%.1f", $0) } ?? "—"
+        print("\(iso.string(from: Date())) [daemon] mode='\(mode)' hands=\(hands) cpu=\(cpu) env=\(env) targets=\(targets) actual=\(actual)")
         fflush(stdout)
         Thread.sleep(forTimeInterval: TEMP_INTERVAL)
     }
