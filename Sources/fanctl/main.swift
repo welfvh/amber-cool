@@ -78,6 +78,16 @@ func applyModeString(_ line: String, _ smc: SMC, loop: TempLoop) {
     }
 }
 
+/// Loop-state identity of a config line: "temp:<location>" for temp modes, else the mode word.
+/// A setpoint-only change ("temp 37 skin" -> "temp 38 skin") keeps the key — slew/EMA state
+/// stays and the loop glides to the new target; a location or mode-kind switch resets it.
+func resetKey(_ line: String) -> String {
+    let parts = line.split(separator: " ").map(String.init)
+    let kind = parts.first?.lowercased() ?? "max"
+    guard kind == "temp" else { return kind }
+    return "temp:" + (parts.count > 2 ? parts[2].lowercased() : "skin")
+}
+
 let args = Array(CommandLine.arguments.dropFirst())
 let cmd = args.first ?? "read"
 
@@ -168,14 +178,15 @@ case "daemon":
     let path = args.count > 1 ? args[1] : CONFIG_PATH
     installSafetyHandlers()   // restore auto on SIGTERM/SIGINT
     let loop = TempLoop()
-    var lastMode: String? = nil
+    var lastKey: String? = nil
     FileHandle.standardError.write(Data("amber-cool daemon started (config: \(path))\n".utf8))
     let iso = ISO8601DateFormatter()
     while true {
         let line = (try? String(contentsOfFile: path, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "max"
         let mode = line.isEmpty ? "max" : line
-        if mode != lastMode { loop.reset(); lastMode = mode }   // stale EMA/slew must not survive a mode switch
+        let key = resetKey(mode)
+        if key != lastKey { loop.reset(); lastKey = key }   // stale EMA/slew must not survive a location/kind switch
         applyModeString(mode, smc, loop: loop)
         let hands = smc.skinTemperature().map { String(format: "%.1f", $0) } ?? "—"
         let cpu = smc.cpuTemperature().map { String(format: "%.1f", $0) } ?? "—"
