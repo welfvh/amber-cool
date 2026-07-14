@@ -8,11 +8,11 @@
 //   1. smoothstep instead of linear — no corner at the ramp edges, soft takeoff near threshold.
 //   2. die protection is itself a smoothstep ramp (emergencySoftC → emergencyC) merged with the
 //      setpoint demand via max(); continuous at the emergency point, so the cliff is gone.
-//   3. slew limiting — climb fast, descend gently. A hard emergency (die ≥ emergencyC) bypasses
-//      the up-limit so max cooling is still instant; the descent afterwards glides.
+//   3. slew limiting — climb fast, descend gently. A hard emergency (die ≥ emergencyC) switches
+//      to a much faster up-slew (full blast in ~8 s, not one tick); the descent afterwards glides.
 public enum FanCurve {
 
-    /// Hard backstop: die at/above this pins fans at max instantly (slew bypassed).
+    /// Hard backstop: die at/above this drives demand to max at the emergency up-slew rate.
     public static let emergencyC = 95.0
     /// Die protection starts blending in here, reaching full at `emergencyC`.
     public static let emergencySoftC = 90.0
@@ -20,6 +20,10 @@ public enum FanCurve {
     /// per 2 s tick on a 5500 rpm span). Asymmetric: heat is urgent, quiet can wait.
     public static let slewUpPerTick = 0.09
     public static let slewDownPerTick = 0.03
+    /// Up-slew while the die is at/above `emergencyC`: much faster than normal but still a ramp —
+    /// full blast in ~4 ticks (~8 s) instead of one. The die tolerates transient 95–105°C (it
+    /// throttles itself); an instant 0→100% spool-up buys no real safety and sounds like a switch.
+    public static let slewUpEmergencyPerTick = 0.25
     /// Smallest usable ramp half-width. A zero or negative margin (user-writable config typo like
     /// "temp 37 skin -3") would invert the ramp — hot readings commanding MINIMUM speed — so the
     /// margin is floored here, at the math layer, protecting every caller.
@@ -42,8 +46,9 @@ public enum FanCurve {
         let want = smoothstep((temp - (setpoint - m)) / (2 * m))
         let protect = die.map { smoothstep(($0 - emergencySoftC) / (emergencyC - emergencySoftC)) } ?? 0
         var d = Swift.max(want, protect)
-        if let prev = previous, (die ?? 0) < emergencyC {
-            d = d > prev ? Swift.min(prev + slewUpPerTick, d)
+        if let prev = previous {
+            let upCap = (die ?? 0) >= emergencyC ? slewUpEmergencyPerTick : slewUpPerTick
+            d = d > prev ? Swift.min(prev + upCap, d)
                          : Swift.max(prev - slewDownPerTick, d)
         }
         return d

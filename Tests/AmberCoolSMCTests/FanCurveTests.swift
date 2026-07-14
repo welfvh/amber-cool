@@ -59,9 +59,20 @@ final class FanCurveTests: XCTestCase {
         XCTAssertEqual(down, 1 - FanCurve.slewDownPerTick, accuracy: 1e-9)
     }
 
-    func testHardEmergencyBypassesSlew() {
-        let d = FanCurve.demand(temp: 30, die: FanCurve.emergencyC, setpoint: sp, margin: m, previous: 0)
-        XCTAssertEqual(d, 1)
+    func testHardEmergencyClimbsAtFastSlew() {
+        // die at the hard threshold: not an instant pin, but the fast emergency ramp —
+        // full blast within 4 ticks (~8 s) from silence
+        var d: Double? = 0
+        var ticks = 0
+        while d! < 1 {
+            d = FanCurve.demand(temp: 30, die: FanCurve.emergencyC, setpoint: sp, margin: m, previous: d)
+            ticks += 1
+            XCTAssertLessThan(ticks, 5)
+        }
+        XCTAssertEqual(ticks, 4)
+        // and each step is bounded by the emergency up-slew
+        let first = FanCurve.demand(temp: 30, die: FanCurve.emergencyC, setpoint: sp, margin: m, previous: 0)
+        XCTAssertEqual(first, FanCurve.slewUpEmergencyPerTick, accuracy: 1e-9)
     }
 
     func testSlewInactiveWithoutPrevious() {

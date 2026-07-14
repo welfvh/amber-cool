@@ -72,7 +72,9 @@ final class TempLoop {
     func reset() { smoothed = nil; demand = nil; lastTick = nil }
 
     func tick(_ smc: SMC, setpoint: Double, location: String, margin: Double) {
-        if let last = lastTick, Date().timeIntervalSince(last) > TEMP_INTERVAL * 5 { reset() }
+        // 60 s: only a real sleep gap resets. Load-induced loop stalls (SMC calls blocking for
+        // 10-20 s under a pegged CPU) must NOT dump the slew state — that reads as a step change.
+        if let last = lastTick, Date().timeIntervalSince(last) > 60 { reset() }
         lastTick = Date()
         guard let raw = smc.controlTemperature(location) else {
             _ = smc.applyMax(); demand = 1; return   // fail-safe: cool hard
