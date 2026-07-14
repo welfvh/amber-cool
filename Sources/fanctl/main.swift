@@ -15,7 +15,6 @@ import AmberCoolSMC
 
 let DEFAULT_MARGIN = 7.5 // ramp half-width for temp mode
 let TEMP_INTERVAL = 2.0  // seconds between recompute (TG Pro default)
-let WRITE_DEADBAND_RPM = 30.0 // skip target writes smaller than this (kills sub-audible dither)
 
 func fail(_ msg: String) -> Never { FileHandle.standardError.write(Data((msg + "\n").utf8)); exit(1) }
 func isRoot() -> Bool { geteuid() == 0 }
@@ -59,36 +58,6 @@ func ensureManual(_ smc: SMC) {
 /// Margin (ramp half-width) appropriate to a control location: surfaces move in a narrow band,
 /// the die swings wide.
 func defaultMargin(_ location: String) -> Double { location.lowercased() == "cpu" ? DEFAULT_MARGIN : 3.0 }
-
-/// State for the hold-temp loop: smoothed reading + last commanded demand (for slew limiting).
-/// Reset on mode change or after a long gap (sleep) so stale state never drives the fans.
-/// Curve math lives in FanCurve (AmberCoolSMC): smoothstep setpoint ramp merged with a graded
-/// die-protection ramp — the die emergency is a curve now, not an on/off cliff at 95°C.
-final class TempLoop {
-    private(set) var smoothed: Double?
-    private var demand: Double?
-    private var lastTick: Date?
-
-    func reset() { smoothed = nil; demand = nil; lastTick = nil }
-
-    func tick(_ smc: SMC, setpoint: Double, location: String, margin: Double) {
-        // 60 s: only a real sleep gap resets. Load-induced loop stalls (SMC calls blocking for
-        // 10-20 s under a pegged CPU) must NOT dump the slew state — that reads as a step change.
-        if let last = lastTick, Date().timeIntervalSince(last) > 60 { reset() }
-        lastTick = Date()
-        guard let raw = smc.controlTemperature(location) else {
-            _ = smc.applyMax(); demand = 1; return   // fail-safe: cool hard
-        }
-        smoothed = smoothed == nil ? raw : (smoothed! * 0.7 + raw * 0.3)
-        let d = FanCurve.demand(temp: smoothed!, die: smc.cpuTemperature(),
-                                setpoint: setpoint, margin: margin, previous: demand)
-        demand = d
-        for f in smc.fans() {
-            let rpm = f.min + (f.max - f.min) * d
-            if abs(rpm - f.target) >= WRITE_DEADBAND_RPM { _ = smc.setTarget(f.index, rpm: rpm) }
-        }
-    }
-}
 
 /// Apply a config line like "max", "scale 7", "rpm 4000", "temp 35 skin", "temp 65 cpu 8", or "auto".
 /// temp format: `temp <targetC> [location] [margin]`  (location defaults to "skin" — heat to your hands).
